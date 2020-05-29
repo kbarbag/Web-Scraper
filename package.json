@@ -15,5 +15,10 @@
   "bugs": {
     "url": "https://github.com/kbarbag/Web-Scraper/issues"
   },
-  "homepage": "https://github.com/kbarbag/Web-Scraper#readme"
+  "homepage": "https://github.com/kbarbag/Web-Scraper#readme",
+  "dependencies": {
+    "axios": "^0.19.2",
+    "axios-https-proxy-fix": "^0.17.1",
+    "mongodb": "^3.5.7"
+  }
 }
