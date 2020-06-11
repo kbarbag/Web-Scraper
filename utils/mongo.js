@@ -1,19 +1,19 @@
 const MongoClient = require('mongodb').MongoClient;
-const assert = require('assert');
 
 
 class DB {
     constructor() {
         // Connection URL
-        const url = 'mongodb://localhost:27017';
+        this.url = 'mongodb://localhost:27017';
 
         // Database Name
         this.dbName = 'webscrapper';
-        this.client = new MongoClient(url);
-        this.client.connect(function (err) {
-            assert.equal(null, err);
-            console.log("Connected successfully to server");
-        });
+        this.client = new MongoClient(this.url);
+        return this;
+    }
+
+    async connect() {
+        this.client = await this.client.connect();
     }
 
     async updateOrInsertData({ collection, query, args }) {
@@ -34,6 +34,7 @@ class DB {
             throw err;
         });
     }
+
 
     async getData({ collection, args, options }) {
         this.db = this.client.db(this.dbName);

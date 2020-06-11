@@ -2,7 +2,7 @@ require('./server.js');
 const { Jsonh } = require('./utils/jsonh.js');
 const { DB } = require('./utils/mongo.js');
 
-const defaultUserFields = { scanned_all: false, scanned_profile: false, scanned_followers: false, scanned_collections: false, scanned_favorite_tracks: false, scanned_following: false, scanned_liked: false, scanned_liked_mixes: false, scanned_mixes: false, scanned_listen_later: false, scanned_listened: false };
+const defaultUserFields = { scanned_all: false, scanned_profile: false, scanned_followers: false, scanned_following: false, scanned_collections: false, scanned_liked: false, scanned_liked_mixes: false, scanned_mixes: false, scanned_favorite_tracks: false, scanned_listen_later: false, scanned_listened: false };
 const defaultFields = { scanned: false };
 const minDelayTimeMS = 2000;
 const maxDelayTimeMS = 4500;
@@ -23,6 +23,184 @@ const wait = function (ms) {
 }
 let curr;
 
+async function fetchAndSaveData({ url, user, pageCollection, queue = [{ default: true }], playlists = [] }) {
+    let page = 1;
+    let fetchedJsonData, subData, fillData, pageData;
+    let minDelayTimeMS = 2500, maxDelayTimeMS = 5000;
+    let randMs = setRandMs(minDelayTimeMS, maxDelayTimeMS);
+    let totalPages = 1;
+    while (page != null && page <= totalPages && page > 0) {
+        await wait(randMs).then(async () => {
+            if (!pageData || pageData === null) {
+                //attempt to get last page searched for the collection
+                pageData = await myDb.getData({ collection: pageCollection, args: { login: user } });
+                if (pageData.length > 0) {
+                    console.log(`Page data from ${pageCollection} for ${user}`);
+                    console.log(pageData);
+                    page = pageData[0].page;
+                }
+            }
+            //we already searched this
+            if (page <= -1) {
+                page = null;
+                return { exitThread: true };
+            }
+            fetchedJsonData = await myJsonh.getJson(`${url}&page=${page}`);
+            if (fetchedJsonData.status === false) return { dat, exitThread: true };
+            switch (pageCollection) {
+                case 'followers_searched':
+                case 'following_searched':
+                case 'user_favorite_tracks_searched':
+                    if (fetchedJsonData.pagination) {
+                        pageData = fetchedJsonData.pagination;
+                        if (page === pageData.next_page) {
+                            page += 1;
+                            if (page >= 500) {
+                                await myDb.updateOrInsertData({ collection: pageCollection, query: { login: user }, args: { $set: { page: -2 } } });
+                                fetchedJsonData.exitThread = true;
+                                page = -2;
+                                break;
+                            }
+                        }
+                        else page = pageData.next_page;
+                        totalPages = pageData.total_pages;
+                    }
+                    break;
+                case 'user_liked_playlists_searched':
+                case 'user_mixes_searched':
+                    if (fetchedJsonData.mix_set.pagination) {
+                        pageData = fetchedJsonData.mix_set.pagination;
+                        page = fetchedJsonData.mix_set.pagination.next_page;
+                        totalPages = pageData.total_pages;
+                        if (totalPages >= 500) {
+                            console.log('check me');
+                        }
+                    }
+                    break;
+                case 'user_collections_searched':
+                    page = null;
+                    break;
+                default:
+                    break;
+            }
+            return fetchedJsonData;
+        }).then(async (fetchedData) => {
+            if (fetchedData.exitThread) return fetchedData;
+
+            switch (pageCollection) {
+                case 'followers_searched':
+                    for (let i = 0; i < fetchedData.users.length; i++) {
+                        subData = fetchedData.users[i];
+                        let followerData = await setUserObject('users', { login: subData.login }, subData, defaultUserFields);
+                        await myDb.updateOrInsertData({ collection: 'users', args: { $set: { ...followerData } }, query: { login: followerData.login } });
+                        if (queue.length < 100) {
+                            queue.push(followerData);
+                        }
+                        // let query = { follower: fetchedData.users[i]['login'], followee: user };
+                        let query = { follower: subData.login, followee: user };
+                        await myDb.updateOrInsertData({ collection: 'followers', args: { $set: { ...query } }, query });
+                    }
+                    break;
+                case 'following_searched':
+                    let tempPush;
+                    for (let i = 0; i < fetchedData.users.length; i++) {
+                        subData = fetchedData.users[i];
+                        fillData = await setUserObject('users', { login: subData.login }, subData, defaultUserFields);
+                        await myDb.updateOrInsertData({ collection: 'users', args: { $set: { ...fillData } }, query: { login: fillData.login } });
+                        tempPush = await myDb.getData({ collection: 'users', args: { $set: { login: fillData.login } } });
+                        if (queue.length < 100) {
+                            queue.push(tempPush[0]);
+                        }
+                        // let query = { follower: fetchedData.users[i]['login'], followee: user };
+                        let query = { followee: subData.login, follower: user };
+                        await myDb.updateOrInsertData({ collection: 'followers', args: { $set: { ...query } }, query });
+                    }
+                    break;
+                case 'user_liked_playlists_searched':
+                    for (let i = 0; i < fetchedData.mix_set.mixes.length; i++) {
+                        subData = fetchedData.mix_set.mixes[i];
+                        fillData = await setUserObject('playlists', { id: subData.id }, subData, { scanned_mix: false, scanned_tracks: false });
+                        // playlists.push(fillData);
+                        let newUser = await setUserObject('users', { login: subData.user.login }, { login: subData.user.login, path: subData.user.path }, defaultUserFields);
+                        if (newUser.scanned_profile === false) {
+                            if (queue.length < 100) { queue.push(newUser); }
+                            await myDb.updateOrInsertData({ collection: 'users', query: { login: subData.user.login }, args: { $set: { ...newUser } } });
+                        }
+                        await myDb.updateOrInsertData({ collection: 'playlists', args: { $set: { ...fillData } }, query: { id: fillData.id } });
+                        await myDb.updateOrInsertData({ collection: 'user_liked_playlists', args: { $set: { user_login: user, playlist_id: subData.id, playlist_name: subData.name } }, query: { user_login: user, playlist_id: subData.id } });
+                    }
+                    break;
+                case 'user_mixes_searched':
+                    for (let i = 0; i < fetchedData.mix_set.mixes.length; i++) {
+                        subData = fetchedData.mix_set.mixes[i];
+                        fillData = await setUserObject('playlists', { id: subData.id }, subData, { scanned_mix: false, scanned_tracks: false });
+                        // playlists.push(fillData);
+                        let newUser = await setUserObject('users', { login: subData.user.login }, { login: subData.user.login, path: subData.user.path }, defaultUserFields);
+                        if (newUser.scanned_profile === false) {
+                            if (queue.length < 100) { queue.push(newUser); }
+                            await myDb.updateOrInsertData({ collection: 'users', query: { login: subData.user.login }, args: { $set: { ...newUser } } });
+                        }
+                        await myDb.updateOrInsertData({ collection: 'playlists', args: { $set: { ...fillData } }, query: { id: fillData.id } });
+                        await myDb.updateOrInsertData({ collection: 'user_mixes_playlists', args: { $set: { user_login: subData.user.login, playlist_id: subData.id, playlist_name: subData.name } }, query: { user_login: subData.user.login, playlist_id: subData.id } });
+                    }
+                    break;
+                case 'user_collections_searched':
+                    let tempMix;
+                    for (let i = 0; i < fetchedData.collections.length; i++) {
+                        fillData = fetchedData.collections[i];
+                        await myDb.updateOrInsertData({ collection: 'user_collections', args: { $set: { user_login: fetchedData.user.login, ...fillData } }, query: { user_login: fetchedData.user.login, id: fillData.id } });
+                        for (let j = 0; j < fillData.mixes.length; j++) {
+                            let query = { collection_id: fillData.id, mix_id: fillData.mixes[j].id };
+                            await myDb.updateOrInsertData({ collection: 'collection_mixes', args: { $set: { ...query } }, query });
+                            tempMix = await setUserObject('playlists', { id: fillData.mixes[j].id }, fillData.mixes[j], { scanned_mix: false, scanned_tracks: false });
+                            // if (playlists.length <= 100) {
+                            //     playlists.push(tempMix);
+                            // }
+                            await myDb.updateOrInsertData({ collection: 'playlists', args: { $set: { ...tempMix } }, query: { id: tempMix.id } });
+                        }
+                    }
+                    break;
+                case 'user_favorite_tracks_searched':
+                    for (let i = 0; i < fetchedData.favorite_tracks.length; i++) {
+                        subData = fetchedData.favorite_tracks[i];
+                        await myDb.updateOrInsertData({ collection: 'user_favorite_tracks', args: { $set: { user_login: fetchedData.user.login, ...subData } }, query: { user_login: fetchedData.user.login, id: subData.id } });
+                        let tempTrack = await setUserObject('tracks', { id: subData.id }, subData, { scanned_track: false });
+                        await myDb.updateOrInsertData({ collection: 'tracks', args: { $set: { ...tempTrack } }, query: { id: tempTrack.id } });
+                    }
+                    break;
+                case 'playlists_searched':
+                case 'user_listened_searched':
+                case 'user_listen_later_searched':
+                default:
+                    break;
+            }
+            //check if exists?
+            let searchedPage = page !== null ? page - 1 : -1;
+            if (user === null || (user === undefined || user === null) && (pageCollection === 'following_searched' || pageCollection === 'followers_searched')) {
+                console.log('what?');
+            }
+            await myDb.updateOrInsertData({ collection: pageCollection, query: { login: user }, args: { $set: { page: searchedPage, login: user } } });
+            randMs += setRandMs(minDelayTimeMS, maxDelayTimeMS);
+            return true;
+        });
+        randMs = setRandMs(minDelayTimeMS, maxDelayTimeMS);
+    }
+    return;
+}
+
+function setRandMs(min = 500, max = 1000) {
+    return Math.ceil(Math.random() * (max - min)) + min;
+}
+
+async function setUserObject(coll, query, userObj, defVals = Object.assign({}, defaultFields)) {
+    let defaultedObj = Object.assign({}, defVals);
+    defaultedObj = Object.assign(defaultedObj, userObj);
+    let orig = await myDb.getData({ collection: coll, args: query });
+    let newObj = Object.assign(defaultedObj, orig[0]);
+    return newObj;
+}
+
+
 (async () => {
     //grab first X unscanned users
     await myDb.connect();
@@ -30,9 +208,8 @@ let curr;
     queue.forEach(user => {
         //we don't want to update either of these values in the database
         delete user._id;
-        delete user.id;
-        queue.push(user);
-    });
+        return user;
+    })
 
     while (queue.length > 0) {
         randMs = Math.ceil(Math.random() * 2000) + 1000;
@@ -151,16 +328,16 @@ let curr;
                 let newUsers = await myDb.getData({ collection: 'users', args: { scanned_all: false }, options: { limit: 100, sort: sortUser } });
                 newUsers.forEach(user => {
                     delete user._id;
-                    delete user.id;
                     queue.push(user);
                 });
             }
-            console.log(`Update ${data.login} to be scanned_profile = true`);
-            await wait(0).then(() => true);
+            console.log(`Update ${data.login} to be scanned_all = true`);
             await myDb.updateOrInsertData({ collection: 'users', query: { login: `${data.login}` }, args: { $set: { scanned_all: true } } });
             return true;
         });
     }
+
+    await myDb.closeClient();
 
 })();
 
