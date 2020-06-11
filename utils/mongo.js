@@ -16,36 +16,34 @@ class DB {
         });
     }
 
-    async insertData({ collection, args, query }) {
-        if (!collection || !args) return;
-        this.db = this.client.db(this.dbName);
-        const coll = this.db.collection(collection);
-        let searchedData = await coll.find(query, { projection: { _id: 0 } }).toArray();
-        if (searchedData.length === 0) {
-            return await coll.insertOne(args, (err, result) => {
-                if (!err) return result;
-                console.log(err);
-                return err;
-            });
-        }
-        return;
-    }
-
-    async updateData({ collection, query, args }) {
+    async updateOrInsertData({ collection, query, args }) {
         this.db = this.client.db(this.dbName);
         const coll = this.db.collection(collection);
         let searchedData = await coll.find(query, { projection: { _id: 0 } }).toArray();
         if (!searchedData || !searchedData.length) {
             delete args.$set._id;
-            return await coll.insertOne(args.$set);
+            return await coll.insertOne(args.$set, (err, result) => {
+                if (!err) return result;
+                console.log('error inserting data: ', err);
+                throw err;
+            });
         }
-        return await coll.updateOne(query, args);
+        return await coll.updateOne(query, args, (err, result) => {
+            if (!err) return result;
+            console.log('error inserting data: ', err);
+            throw err;
+        });
     }
 
     async getData({ collection, args, options }) {
         this.db = this.client.db(this.dbName);
         const coll = this.db.collection(collection);
         return await coll.find(args, { ...options, projection: { _id: 0 } }).toArray();
+    }
+
+    async connect() {
+        await this.client.connect();
+        return this;
     }
 
     closeClient() {
