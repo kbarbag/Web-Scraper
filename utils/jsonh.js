@@ -8,14 +8,7 @@ class Jsonh {
 
     async getJson(url) {
         console.log(url);
-        return await axios({
-            url, agent: {
-                proxy: {
-                    host: '144.91.116.171',
-                    port: 443
-                }
-            }
-        }).then(resp => {
+        return await axios({ url }).then(resp => {
             return resp.data;
         }).catch(err => {
             console.log('error in fetching data');
