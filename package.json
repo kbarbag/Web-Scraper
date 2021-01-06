@@ -17,7 +17,7 @@
   },
   "homepage": "https://github.com/kbarbag/Web-Scraper#readme",
   "dependencies": {
-    "axios": "^0.19.2",
+    "axios": "^0.21.1",
     "axios-https-proxy-fix": "^0.17.1",
     "mongodb": "^3.5.7"
   }
